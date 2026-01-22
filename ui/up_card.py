@@ -1,53 +1,53 @@
 """
-UP主卡片Widget
+UP主卡片Widget V2 - 带右键菜单
 """
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QFrame)
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
+                             QPushButton, QMenu, QAction)
+from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from PyQt5.QtGui import QFont, QCursor
 import webbrowser
 from core.bilibili_api import BilibiliAPI
 
 
-class UPCardWidget(QFrame):
-    """UP主卡片Widget"""
-    
-    clicked = pyqtSignal(int)  # 点击卡片信号，传递mid
-    
+class UPCardWidgetV2(QFrame):
+    """UP主卡片Widget V2 - 带右键菜单"""
+
+    clicked = pyqtSignal(int)  # 点击卡片信号
+    add_to_blacklist_signal = pyqtSignal(int, str)  # 添加到过滤名单信号 (mid, name)
+
     def __init__(self, up_info: dict, rank: int, parent=None):
         super().__init__(parent)
         self.up_info = up_info
         self.rank = rank
         self.mid = up_info['mid']
-        
+
         self.setup_ui()
         self.setup_style()
-    
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
     def setup_ui(self):
         """设置UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
-        
-        # 标题行：排名 + 名称 + 认证
+
+        # 标题行
         title_layout = QHBoxLayout()
-        
-        # 排名
+
         rank_label = QLabel(f"#{self.rank}")
         rank_label.setFont(QFont("Arial", 11, QFont.Bold))
         rank_label.setStyleSheet("color: #00a1d6;")
         rank_label.setFixedWidth(40)
         title_layout.addWidget(rank_label)
-        
-        # 名称
+
         name_label = QLabel(self.up_info['name'])
         name_label.setFont(QFont("Arial", 12, QFont.Bold))
         name_label.setStyleSheet("color: #212529;")
         title_layout.addWidget(name_label)
-        
+
         title_layout.addStretch()
-        
-        # 认证标签
+
         if self.up_info.get('official'):
             official_label = QLabel("✓ 认证")
             official_label.setStyleSheet("""
@@ -58,9 +58,9 @@ class UPCardWidget(QFrame):
                 font-size: 9px;
             """)
             title_layout.addWidget(official_label)
-        
+
         layout.addLayout(title_layout)
-        
+
         # 信息行
         info_label = QLabel(
             f"👥 粉丝: {BilibiliAPI.format_number(self.up_info['fans'])}  |  "
@@ -69,7 +69,7 @@ class UPCardWidget(QFrame):
         )
         info_label.setStyleSheet("color: #6c757d; font-size: 10px;")
         layout.addWidget(info_label)
-        
+
         # 签名
         if self.up_info.get('sign'):
             sign_text = self.up_info['sign'][:60] + ("..." if len(self.up_info['sign']) > 60 else "")
@@ -77,11 +77,10 @@ class UPCardWidget(QFrame):
             sign_label.setStyleSheet("color: #6c757d; font-size: 9px;")
             sign_label.setWordWrap(True)
             layout.addWidget(sign_label)
-        
+
         # 按钮行
         btn_layout = QHBoxLayout()
-        
-        # 访问主页按钮
+
         space_btn = QPushButton("🏠 访问主页")
         space_btn.setCursor(QCursor(Qt.PointingHandCursor))
         space_btn.setStyleSheet("""
@@ -99,8 +98,7 @@ class UPCardWidget(QFrame):
         """)
         space_btn.clicked.connect(self.open_space)
         btn_layout.addWidget(space_btn)
-        
-        # 发私信按钮
+
         msg_btn = QPushButton("✉️ 发私信")
         msg_btn.setCursor(QCursor(Qt.PointingHandCursor))
         msg_btn.setStyleSheet("""
@@ -118,36 +116,77 @@ class UPCardWidget(QFrame):
         """)
         msg_btn.clicked.connect(self.open_message)
         btn_layout.addWidget(msg_btn)
-        
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-    
+
     def setup_style(self):
         """设置样式"""
         self.setFrameShape(QFrame.Box)
         self.setStyleSheet("""
-            UPCardWidget {
+            UPCardWidgetV2 {
                 background-color: #f8f9fa;
                 border: 1px solid #dee2e6;
                 border-radius: 8px;
             }
-            UPCardWidget:hover {
+            UPCardWidgetV2:hover {
                 background-color: #e9ecef;
-                border: 1px solid #00a1d6;
+                border: 1px solid: #00a1d6;
             }
         """)
         self.setCursor(QCursor(Qt.PointingHandCursor))
-    
+
+    def show_context_menu(self, pos: QPoint):
+        """显示右键菜单"""
+        menu = QMenu(self)
+
+        # 添加到过滤名单
+        blacklist_action = QAction("🚫 添加到过滤名单", self)
+        blacklist_action.triggered.connect(self.add_to_blacklist)
+        menu.addAction(blacklist_action)
+
+        menu.addSeparator()
+
+        # 访问主页
+        space_action = QAction("🏠 访问主页", self)
+        space_action.triggered.connect(self.open_space)
+        menu.addAction(space_action)
+
+        # 发私信
+        message_action = QAction("✉️ 发私信", self)
+        message_action.triggered.connect(self.open_message)
+        menu.addAction(message_action)
+
+        menu.addSeparator()
+
+        # 复制UID
+        copy_action = QAction("📋 复制UID", self)
+        copy_action.triggered.connect(self.copy_mid)
+        menu.addAction(copy_action)
+
+        # 显示菜单
+        menu.exec_(self.mapToGlobal(pos))
+
+    def add_to_blacklist(self):
+        """添加到过滤名单"""
+        self.add_to_blacklist_signal.emit(self.mid, self.up_info['name'])
+
+    def copy_mid(self):
+        """复制UID到剪贴板"""
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(str(self.mid))
+
     def mousePressEvent(self, event):
         """鼠标点击事件"""
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.mid)
             self.open_space()
-    
+
     def open_space(self):
         """打开UP主空间"""
         webbrowser.open(f"https://space.bilibili.com/{self.mid}")
-    
+
     def open_message(self):
         """打开私信"""
         webbrowser.open(f"https://message.bilibili.com/#/whisper/mid{self.mid}")

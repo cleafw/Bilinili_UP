@@ -1,21 +1,22 @@
 """
-搜索工作线程
+搜索工作线程 - 支持实时更新和断点续搜
 """
 from PyQt5.QtCore import QThread, pyqtSignal
 from core.bilibili_api import BilibiliAPI
-from typing import Dict
+from typing import Dict, Set
 import time
 
 
 class SearchWorker(QThread):
-    """搜索工作线程"""
+    """搜索工作线程 - 实时更新版"""
 
     # 信号定义
     progress_updated = pyqtSignal(str)  # 进度更新
-    video_found = pyqtSignal(int, int)  # 找到视频 (当前数, 总数)
-    up_found = pyqtSignal(int, int)  # 找到UP主 (符合条件数, 总UP数)
+    video_found = pyqtSignal(dict)  # 找到单个视频
+    up_found = pyqtSignal(dict, bool)  # 找到UP主 (UP信息, 是否符合粉丝条件)
     search_completed = pyqtSignal(dict)  # 搜索完成
     error_occurred = pyqtSignal(str)  # 发生错误
+    page_completed = pyqtSignal(int)  # 完成一页
 
     def __init__(self):
         super().__init__()
@@ -25,125 +26,116 @@ class SearchWorker(QThread):
         self.max_play = 999999999
         self.min_fans = 0
         self.max_fans = 999999999
-        self.pages = 1
+        self.start_page = 1
+        self.total_pages = 1
         self._is_running = True
+        self.searched_mids: Set[int] = set()  # 已搜索的UP主ID
 
     def set_params(self, keyword: str, min_play: int, max_play: int,
-                   min_fans: int, max_fans: int, pages: int):
+                   min_fans: int, max_fans: int, start_page: int, total_pages: int,
+                   searched_mids: Set[int] = None):
         """设置搜索参数"""
         self.keyword = keyword
         self.min_play = min_play
         self.max_play = max_play
         self.min_fans = min_fans
         self.max_fans = max_fans
-        self.pages = pages
+        self.start_page = start_page
+        self.total_pages = total_pages
+        self.searched_mids = searched_mids if searched_mids else set()
 
     def stop(self):
         """停止搜索"""
         self._is_running = False
 
     def run(self):
-        """执行搜索任务"""
+        """执行搜索任务 - 实时更新版本"""
         try:
             self._is_running = True
             all_videos = []
+            filtered_videos_count = 0
+            all_ups_count = 0
+            qualified_ups_count = 0
 
-            # 步骤1: 搜索视频
-            self.progress_updated.emit(f"开始搜索关键词: {self.keyword}")
-
-            for page in range(1, self.pages + 1):
+            # 逐页搜索
+            for page in range(self.start_page, self.start_page + self.total_pages):
                 if not self._is_running:
-                    return
+                    break
 
-                self.progress_updated.emit(f"正在搜索第 {page}/{self.pages} 页...")
+                self.progress_updated.emit(f"正在搜索第 {page} 页...")
+
+                # 搜索视频
                 videos = self.api.search_videos(self.keyword, page)
+                if not videos:
+                    self.progress_updated.emit(f"第 {page} 页没有找到视频")
+                    continue
+
                 all_videos.extend(videos)
-                self.video_found.emit(len(all_videos), len(all_videos))
 
-            if not all_videos:
-                self.error_occurred.emit("未找到任何视频")
-                return
+                # 筛选播放量并实时发送视频
+                for video in videos:
+                    if not self._is_running:
+                        break
 
-            # 步骤2: 根据播放量筛选视频
-            self.progress_updated.emit(f"根据播放量筛选视频...")
-            filtered_videos = self.api.filter_videos_by_play_count(
-                all_videos, self.min_play, self.max_play
-            )
+                    play_count = video.get("play", 0)
+                    if isinstance(play_count, str):
+                        play_count = self.api._parse_play_count(play_count)
 
-            if not filtered_videos:
-                self.error_occurred.emit(f"播放量在 {self.min_play}-{self.max_play} 范围内的视频为0")
-                return
+                    # 检查播放量
+                    if self.min_play <= play_count <= self.max_play:
+                        filtered_videos_count += 1
+                        # 实时发送视频信息
+                        self.video_found.emit(video)
 
-            self.progress_updated.emit(
-                f"找到 {len(filtered_videos)} 个符合播放量要求的视频"
-            )
+                        # 提取UP主
+                        mid = video.get("mid")
+                        if mid and mid not in self.searched_mids:
+                            self.searched_mids.add(mid)
+                            all_ups_count += 1
 
-            # 步骤3: 提取所有UP主信息（不筛选粉丝数）
-            self.progress_updated.emit("开始提取所有UP主信息...")
+                            # 获取UP主信息
+                            self.progress_updated.emit(f"获取UP主信息: {video.get('author', '未知')}...")
+                            user_info = self.api.get_user_info(mid)
 
-            all_ups_dict = {}
-            processed_mids = set()
+                            if user_info:
+                                fans = user_info.get("follower", 0)
 
-            for index, video in enumerate(filtered_videos):
-                if not self._is_running:
-                    return
+                                # 构建UP主数据
+                                up_data = {
+                                    "mid": mid,
+                                    "name": user_info.get("name", "未知"),
+                                    "fans": fans,
+                                    "videos": user_info.get("video", 0),
+                                    "sign": user_info.get("sign", "无签名"),
+                                    "level": user_info.get("level", 0),
+                                    "official": user_info.get("official", {}).get("title", ""),
+                                    "face": user_info.get("face", ""),
+                                }
 
-                mid = video.get("mid")
-                if not mid or mid in processed_mids:
-                    continue
+                                # 判断是否符合粉丝条件
+                                is_qualified = self.min_fans <= fans <= self.max_fans
+                                if is_qualified:
+                                    qualified_ups_count += 1
 
-                processed_mids.add(mid)
+                                # 实时发送UP主信息
+                                self.up_found.emit(up_data, is_qualified)
 
-                self.progress_updated.emit(f"正在获取UP主信息... ({index + 1}/{len(filtered_videos)})")
+                            # 延迟避免请求过快
+                            time.sleep(0.5)
 
-                # 获取UP主详细信息
-                user_info = self.api.get_user_info(mid)
-                if not user_info:
-                    print(f"[DEBUG] 无法获取 mid={mid} 的用户信息")
-                    continue
+                # 完成一页
+                self.page_completed.emit(page)
+                self.progress_updated.emit(f"第 {page} 页完成")
 
-                fans = user_info.get("follower", 0)
-                name = user_info.get("name", "未知")
-
-                print(f"[DEBUG] 获取到UP主: {name}, mid={mid}, 粉丝={fans}")
-
-                # 添加到所有UP主字典
-                all_ups_dict[mid] = {
-                    "mid": mid,
-                    "name": name,
-                    "fans": fans,
-                    "videos": user_info.get("video", 0),
-                    "sign": user_info.get("sign", "无签名"),
-                    "level": user_info.get("level", 0),
-                    "official": user_info.get("official", {}).get("title", ""),
-                    "face": user_info.get("face", ""),
-                }
-
-                time.sleep(0.3)
-
-            # 步骤4: 根据粉丝数筛选UP主
-            self.progress_updated.emit("根据粉丝数筛选UP主...")
-            filtered_ups_dict = {
-                mid: up_info for mid, up_info in all_ups_dict.items()
-                if self.min_fans <= up_info['fans'] <= self.max_fans
-            }
-
-            print(f"[DEBUG] 搜索完成统计:")
-            print(f"  - 总视频数: {len(all_videos)}")
-            print(f"  - 筛选后视频数: {len(filtered_videos)}")
-            print(f"  - 所有UP主数: {len(all_ups_dict)}")
-            print(f"  - 符合条件UP主数: {len(filtered_ups_dict)}")
-
-            # 步骤5: 返回结果
+            # 搜索完成
             result = {
+                "keyword": self.keyword,
                 "total_videos": len(all_videos),
-                "all_videos": all_videos,
-                "filtered_videos": filtered_videos,
-                "filtered_videos_count": len(filtered_videos),
-                "all_ups": all_ups_dict,
-                "total_ups": len(all_ups_dict),
-                "ups": filtered_ups_dict,
-                "qualified_ups": len(filtered_ups_dict),
+                "filtered_videos_count": filtered_videos_count,
+                "all_ups_count": all_ups_count,
+                "qualified_ups_count": qualified_ups_count,
+                "last_page": self.start_page + self.total_pages - 1,
+                "searched_mids": self.searched_mids,
             }
 
             self.search_completed.emit(result)
