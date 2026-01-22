@@ -105,7 +105,7 @@ class BilibiliAPI:
                             "mid": card.get("mid"),
                             "name": card.get("name"),
                             "follower": card.get("fans", 0),
-                            "video": card.get("archive_count", 0),
+                            "video": card.get("archive_count", card.get("vr", 0)),  # 修改这里
                             "sign": card.get("sign", "无签名"),
                             "level": card.get("level_info", {}).get("current_level", 0),
                             "official": card.get("official_verify", {}),

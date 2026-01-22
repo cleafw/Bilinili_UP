@@ -717,29 +717,20 @@ class MainWindowV3(QMainWindow):
 
     def add_up_to_blacklist(self, mid: int, name: str):
         """添加UP主到过滤名单"""
-        reply = QMessageBox.question(
-            self, "确认",
-            f"确定要将 {name} (UID: {mid}) 添加到过滤名单吗？",
-            QMessageBox.Yes | QMessageBox.No
-        )
+        self.config.add_to_blacklist(mid)
 
-        if reply == QMessageBox.Yes:
-            self.config.add_to_blacklist(mid)
+        # 如果应用过滤，从列表移除
+        if self.apply_blacklist:
+            self.remove_up_card(mid)
 
-            # 如果应用过滤，从列表移除
-            if self.apply_blacklist:
-                self.remove_up_card(mid)
-
-            # 在"所有UP主"列表中标记
-            for i in range(self.all_up_list.count()):
-                item = self.all_up_list.item(i)
-                if item.data(Qt.UserRole) == mid:
-                    text = item.text()
-                    if "🚫" not in text:
-                        item.setText(text.replace("\n", " 🚫\n"))
-                    break
-
-            QMessageBox.information(self, "成功", f"已将 {name} 添加到过滤名单")
+        # 在"所有UP主"列表中标记
+        for i in range(self.all_up_list.count()):
+            item = self.all_up_list.item(i)
+            if item.data(Qt.UserRole) == mid:
+                text = item.text()
+                if "🚫" not in text:
+                    item.setText(text.replace("\n", " 🚫\n"))
+                break
 
     def remove_up_card(self, mid: int):
         """从符合条件列表移除UP主卡片"""
@@ -753,16 +744,16 @@ class MainWindowV3(QMainWindow):
             if mid in self.filtered_ups:
                 del self.filtered_ups[mid]
 
-            # 更新计数
-            self.filtered_up_count_label.setText(f"共 {len(self.filtered_ups)} 个UP主")
+            # 更新计数（这里要用up_cards的长度，因为已经删除了）
+            self.filtered_up_count_label.setText(f"共 {len(self.up_cards)} 个UP主")
 
-            # 重新编号
-            self.refresh_card_ranks()
+            # 重新编号并刷新UI（改为完全重建）
+            self.refresh_filtered_ups_display()  # 改用这个方法
 
     def refresh_card_ranks(self):
         """刷新卡片排名"""
         # 按粉丝数重新排序
-        sorted_ups = sorted(self.filtered_ups.values(), key=lambda x: x.get('fans', 0), reverse=True)
+        sorted_ups = sorted(self.filtered_ups.values(), key=lambda x: x.get('fans') or 0, reverse=True)
 
         for idx, up in enumerate(sorted_ups, 1):
             mid = up['mid']
@@ -770,6 +761,38 @@ class MainWindowV3(QMainWindow):
                 self.up_cards[mid].rank = idx
                 # 更新卡片上的排名显示
                 # 注意：这需要在UPCardWidgetV2中添加update_rank方法
+
+    def refresh_filtered_ups_display(self):
+        """完全刷新符合条件的UP主显示（用于删除后重新排列）"""
+        # 清空当前显示
+        while self.filtered_up_layout.count():
+            item = self.filtered_up_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # 清空卡片字典
+        self.up_cards.clear()
+
+        # 按粉丝数重新排序
+        sorted_ups = sorted(self.filtered_ups.values(), key=lambda x: x.get('fans') or 0, reverse=True)
+
+        # 重新创建所有卡片
+        for idx, up in enumerate(sorted_ups, 1):
+            mid = up['mid']
+
+            # 如果应用过滤名单过滤且在过滤名单中，跳过
+            if self.apply_blacklist and self.config.is_in_blacklist(mid):
+                continue
+
+            # 创建卡片
+            card = UPCardWidgetV2(up, idx)
+            card.add_to_blacklist_signal.connect(self.add_up_to_blacklist)
+
+            self.up_cards[mid] = card
+            self.filtered_up_layout.addWidget(card)
+
+        # 更新计数
+        self.filtered_up_count_label.setText(f"共 {len(self.up_cards)} 个UP主")
 
     def toggle_blacklist_filter(self, state):
         """切换过滤名单过滤"""
@@ -818,7 +841,7 @@ class MainWindowV3(QMainWindow):
 
     def show_blacklist_dialog(self):
         """显示过滤名单管理对话框"""
-        dialog = BlacklistDialog(self.config, self)
+        dialog = BlacklistDialog(self.config, self.all_ups, self)  # 传入所有UP主数据
         dialog.blacklist_updated.connect(self.on_blacklist_updated)
         dialog.exec_()
 
@@ -938,15 +961,15 @@ class MainWindowV3(QMainWindow):
         # 清空列表
         self.all_up_list.clear()
 
-        # 从原始数据筛选并重新显示
+        # 从原始数据筛选并重新显示（修复：确保fans不为None）
         filtered = {mid: up for mid, up in self.all_ups.items()
-                    if min_fans <= up.get('fans', 0) <= max_fans}
+                    if min_fans <= (up.get('fans') or 0) <= max_fans}  # 修改这里
 
-        sorted_ups = sorted(filtered.values(), key=lambda x: x.get('fans', 0), reverse=True)
+        sorted_ups = sorted(filtered.values(), key=lambda x: x.get('fans') or 0, reverse=True)  # 修改这里
 
         for idx, up in enumerate(sorted_ups, 1):
             name = up.get('name', '未知')
-            fans = up.get('fans', 0)
+            fans = up.get('fans') or 0  # 修改这里
             videos = up.get('videos', 0)
             mid = up.get('mid')
 
@@ -977,11 +1000,11 @@ class MainWindowV3(QMainWindow):
 
         self.up_cards.clear()
 
-        # 从原始数据筛选
+        # 从原始数据筛选（修复：确保fans不为None）
         filtered = {mid: up for mid, up in self.filtered_ups.items()
-                    if min_fans <= up.get('fans', 0) <= max_fans}
+                    if min_fans <= (up.get('fans') or 0) <= max_fans}  # 修改这里
 
-        sorted_ups = sorted(filtered.values(), key=lambda x: x.get('fans', 0), reverse=True)
+        sorted_ups = sorted(filtered.values(), key=lambda x: x.get('fans') or 0, reverse=True)  # 修改这里
 
         for idx, up in enumerate(sorted_ups, 1):
             mid = up['mid']

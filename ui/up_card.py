@@ -190,3 +190,16 @@ class UPCardWidgetV2(QFrame):
     def open_message(self):
         """打开私信"""
         webbrowser.open(f"https://message.bilibili.com/#/whisper/mid{self.mid}")
+
+    def update_rank(self, new_rank: int):
+        """更新排名显示"""
+        self.rank = new_rank
+        # 找到排名标签并更新
+        # 假设排名标签是第一个QLabel
+        layout = self.layout()
+        if layout and layout.count() > 0:
+            title_layout = layout.itemAt(0)
+            if title_layout and title_layout.layout():
+                rank_label = title_layout.layout().itemAt(0).widget()
+                if isinstance(rank_label, QLabel):
+                    rank_label.setText(f"#{new_rank}")
